@@ -1,2 +1,2 @@
 # pregnant_sud_lca
-IHME Code Sample
+The code I’ve provided is a latent class analysis (LCA) I ran to identify subgroups of pregnant patients seeking treatment for substance use disorders based on variables about a woman’s substance consumption and past history of use. After choosing a 4-class model, I then ran a logistic regression model to examine differences in treatment completion by class membership across age, race, ethnicity, marital status, education status, employment status, and living arrangement. 
