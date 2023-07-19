@@ -1,0 +1,386 @@
+---
+title: "Matthew Russell Code Sample"
+output: html_document
+---
+
+# set up
+
+```{r}
+library(tidyverse)
+library(poLCA)
+library(gtsummary)
+library(knitr)
+library(lmtest)
+library(ggthemes)
+library(tidyLPA)
+```
+
+# read in data and filter so it's only pregnant observations
+
+```{r}
+
+# read in data
+
+teds <- readr::read_csv("./tedsd_puf_2019.csv")
+
+# filter data so it's only pregnant women
+
+preg_df <-
+  teds %>% 
+  janitor::clean_names() %>%
+  dplyr::mutate(
+    id = seq(1:nrow(teds))
+  ) %>% 
+  dplyr::filter(preg == 1) %>% 
+  dplyr::relocate(id, .before = disyr)
+
+# remove teds data to make space
+
+rm(teds)
+gc()
+
+```
+
+# select relevant columns and convert all to meaningful factors
+
+```{r}
+
+# grab the ids from the
+# among data only are looking  pregnant women with the variables we're interested 
+# in using to build the latent classes
+ids <- 
+preg_df %>% 
+  dplyr::select(id, alcflg, frstuse1, herflg, marflg, mthamflg, noprior, psyprob, reason) %>% 
+  dplyr::filter(reason %in% c(1,2) & frstuse1 != -9 & noprior != -9 & psyprob != -9) %>% 
+  na.omit() %>% 
+  dplyr::pull(., id)
+
+# create copy of preg_df
+# where we filter to only the ids in ids vector
+# convert variables to factors
+
+preg_factor <-
+  preg_df %>% 
+  dplyr::filter(id %in% ids) %>% 
+  dplyr::mutate(
+    alcflg = factor(alcflg, levels = c(0,1), labels = c("No", "Yes")), 
+    comp_trt = factor(ifelse(reason == 1, "Yes", "No")),
+    frstuse1 = factor(frstuse1) %>% 
+      forcats::fct_collapse(., 
+                   "14 and under" = c("1", "2"),
+                   "15 to 17" = "3", 
+                   "18 to 20" = "4", 
+                   "21+" = c("5", "6", "7")), 
+    herflg = factor(herflg, levels = c(0,1), labels = c("No", "Yes")), 
+    marflg = factor(marflg, levels = c(0,1), labels = c("No", "Yes")), 
+    mthamflg = factor(mthamflg, levels = c(0,1), labels = c("No", "Yes")),
+    prior = factor(noprior, levels = c(0:1), labels = c("No Treatment", "One or more treatment")), 
+    psyprob = factor(psyprob, levels = c(1:2), labels = c("Yes", "No")) %>% forcats::fct_rev(.)
+  ) %>% 
+  dplyr::select(!c(reason, noprior)) %>% 
+  dplyr::select(order(colnames(.))) %>% 
+  dplyr::relocate(id, .before = alcflg) %>% 
+  as.data.frame() %>% 
+  na.omit()
+
+# pull out treatment vector
+
+comp_trt <- preg_factor %>% dplyr::pull(., comp_trt)
+
+# subset to only independent variables
+
+no_outcome_df <- preg_factor %>% 
+  dplyr::select(alcflg, frstuse1, herflg, marflg, mthamflg, prior, psyprob)
+
+```
+
+# lca
+
+```{r}
+
+# create the formula of the variables to put into the LCA
+
+attach(no_outcome_df)
+formula <- cbind(alcflg, frstuse1, herflg,
+         marflg, mthamflg, prior, psyprob) ~ 1
+detach(no_outcome_df)
+
+# run the LCA 
+# from 1 class to 5 class models
+# then compare AIC, BIC, and G-squared
+
+lc_list <- purrr::map(1:5, function(x) {
+  
+  set.seed(100)
+  poLCA::poLCA(formula, no_outcome_df, nclass = x, maxiter = 10000)
+}
+)
+
+# compare aics, bics, and G2
+
+tibble::tibble(
+  num_class = seq(1:5), 
+  aic = purrr::map_dbl(lc_list, "aic"),
+  bic =  purrr::map_dbl(lc_list, "bic"), 
+  `g-squared` = purrr::map_dbl(lc_list, "Gsq")
+) %>% 
+  dplyr::arrange(num_class) %>% 
+  knitr::kable(digits = 2)
+
+# get frequency information among our independent variables for our formula
+no_outcome_df %>% 
+  dplyr::select(c(alcflg, frstuse1, herflg,
+         marflg, mthamflg, prior, psyprob)) %>% 
+  gtsummary::tbl_summary(.)
+
+```
+
+*we're using a four-class model*
+
+# adding predicted classes
+
+```{r, adding predicted class}
+
+pred_class_df <-
+  preg_factor %>% 
+  dplyr::filter(id %in% ids) %>% 
+  dplyr::select(c(age, race, ethnic, marstat, educ, employ, livarag)) %>% 
+  dplyr::mutate(
+    pc_4 = factor(lc_list[[4]]$predclass), 
+    comp_trt = comp_trt, 
+    age = factor(age, levels = c(1:12), 
+                 labels = c("12-14", "15-17", 
+                            "18-20", "21-24", 
+                            "25-29", "30-34", 
+                            "35-39", "40-44", 
+                            "45-49", "50-54", 
+                            "55-64", "65+")) %>% 
+      forcats::fct_collapse(., 
+                   `12-29` = c("12-14", "15-17", 
+                            "18-20", "21-24", 
+                            "25-29"), 
+                   `30+` = c("30-34", 
+                            "35-39", "40-44", 
+                            "45-49", "50-54", 
+                            "55-64", "65+")),
+    race = factor(race, levels = c(1:9)) %>% 
+      forcats::fct_collapse(., 
+                   "white" = "5", 
+                   other_level = "other"), 
+    ethnic = factor(ethnic, levels = c(1:5)) %>% 
+      forcats::fct_collapse(.,
+                   "not_hispanic" = "4", 
+                   other_level = "hispanic"), 
+    marstat = factor(marstat, levels = c(1:4),
+                     labels = c("never_married", "married",
+                                "separated", "divorced/widowed")), 
+    educ = factor(educ, levels = c(1:5)) %>% 
+      forcats::fct_collapse(., 
+                   "less_than_hs" = c("1", "2"), 
+                   "hs" = "3", 
+                   other_level = "more_than_hs"), 
+    employ = factor(employ, levels = c(1:4)) %>% 
+      forcats::fct_collapse(., 
+                   "employed" = c("1", "2"), 
+                   "unemployed" = "3", 
+                   other_level = "not_in_labor_force") %>% 
+      forcats::fct_relevel(., "not_in_labor_force", "unemployed", "employed"), 
+    livarag = factor(livarag, levels = c(1:3)) %>% 
+      forcats::fct_collapse(., 
+                   "not_homeless" = c("2", "3"),
+                   other_level = "homeless")
+  )
+
+# print summary of demographic variables
+pred_class_df %>% 
+  dplyr::select(-pc_4) %>% 
+  gtsummary::tbl_summary(.)
+
+
+```
+
+# logistic regression: four-class model
+
+```{r}
+
+# four class model 
+
+pred_class_df$pc_4 <- relevel(pred_class_df$pc_4, ref = "4")
+
+# null model
+
+null_log_m_4 <- glm(comp_trt ~ pc_4, data = pred_class_df, family = "binomial")
+
+# summary of null model
+summary(null_log_m_4)
+
+# coefficients and CI of null model 
+exp(cbind("Odds ratio" = coef(null_log_m_4), confint.default(null_log_m_4, level = 0.95))) %>% 
+  kable(digits = 4)
+
+# full model
+
+full_log_m_4 <- glm(comp_trt ~ age  + race + ethnic + marstat + educ + employ + livarag + pc_4, data = pred_class_df, family = "binomial")
+
+# summary of full model
+summary(full_log_m_4)
+
+# coefficients and CI of full model 
+exp(cbind("Odds ratio" = coef(full_log_m_4), confint.default(full_log_m_4, level = 0.95))) %>%
+  kable(digits = 2)
+
+# LRT for full vs null 
+
+log_lrt <- glm(comp_trt ~ age  + race + ethnic + marstat + educ + employ + livarag, data = pred_class_df, family = "binomial")
+
+lrtest(full_log_m_4, log_lrt)
+
+```
+
+# distribution of categorical variables by class: 4 class model
+
+```{r}
+
+# print demographic table summary for each of the classes
+for (i in c(1:4)) {
+  
+  pred_class_df %>% 
+  dplyr::select(-comp_trt) %>% 
+  dplyr::filter(pc_4 == as.character(i)) %>% 
+  gtsummary::tbl_summary(.) %>% print()
+
+}
+
+```
+
+# frequencies for each level of the variable per class: 4 class model
+
+```{r}
+# this is data manipulation so that we can each row represents a 
+# variable and a level and we can see the N sizes of each variable/level
+# combination per class 
+
+freq_per_var_level <-
+  pred_class_df %>% 
+    tidyr::pivot_longer(
+      cols = !pc_4, 
+      names_to = "variable", 
+      values_to = "level"
+    ) %>% 
+    dplyr::rename(class = pc_4) %>% 
+    dplyr::mutate(
+      class = as.numeric(class)
+    ) %>% 
+    dplyr::select(variable, level, class) %>% 
+    dplyr::group_by(variable, level, class) %>% 
+    dplyr::mutate(
+      freq_total = n()
+    ) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::group_by(class, variable) %>% 
+    dplyr::mutate(
+      class_total = n(), 
+    ) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(variable, level, class, freq_total) %>% 
+    dplyr::distinct() %>%
+    tidyr::pivot_wider(
+      names_from = class, 
+      values_from = freq_total, 
+      names_prefix = "class_freq_"
+    ) %>% 
+    dplyr::select(variable, level, class_freq_1, class_freq_2, class_freq_3, class_freq_4) %>% 
+    dplyr::arrange(variable, level) %>% 
+  na.omit()
+
+```
+
+# prop test
+
+```{r, prop test}
+
+# grab the N sizes of each of the classes 
+n_sizes <- 
+pred_class_df %>% 
+  dplyr::count(pc_4) %>% 
+  dplyr::mutate(pc_4 = as.numeric(pc_4)) %>% 
+  dplyr::arrange(pc_4) %>% 
+  dplyr::pull(., n)
+
+# initialize list where we will add p-values from prop.test
+output <- list()
+
+for (i in 1:20) {
+  
+  # run prop.test on each row of freq_per_var_level
+  # using final four columns of freq_per_var_level as counts 
+  # and using n_sizes as our n's
+  output[[i]] = prop.test(c(t(freq_per_var_level[i, 3:6])), n_sizes)$p.value
+  
+}
+
+# add vector of p-values for homogeneity of proportions to each test 
+
+hom_prop_df <-
+  freq_per_var_level %>% 
+  dplyr::mutate(
+    p_value = unlist(output)
+  )
+
+# View which variables have a p-value of less than 5%
+
+hom_prop_df %>% 
+  dplyr::filter(p_value < 0.05) %>% 
+  view()
+
+```
+
+# plot of different probabilities of using a drug by class
+
+```{r}
+
+no_outcome_df %>% 
+  dplyr::mutate(
+    class = lc_list[[4]]$predclass
+  ) %>% 
+  dplyr::select(alcflg, herflg, marflg, mthamflg, class) %>% 
+  dplyr::group_by(class) %>% 
+  dplyr::mutate(
+    total_class = n()
+  ) %>% 
+  dplyr::ungroup() %>% 
+  tidyr::pivot_longer(
+    cols = c(alcflg, herflg, marflg, mthamflg), 
+    names_to = "variable", 
+    values_to = "response"
+  ) %>% 
+  dplyr::group_by(variable, response, class) %>% 
+  dplyr::mutate(
+    class_response = n()
+  ) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::distinct() %>% 
+  dplyr::filter(response == "Yes") %>% 
+  dplyr::mutate(
+    freq = class_response/total_class
+  ) %>% 
+  dplyr::select(variable, class, freq) %>% 
+  dplyr::bind_rows(
+    tibble(
+      variable = "alcflg", 
+      class = 3, 
+      freq = 0
+    )
+  ) %>%
+  dplyr::arrange(variable, class) %>% 
+  dplyr::mutate(
+    class = factor(class)
+  ) %>% 
+  ggplot2::ggplot(aes(x = variable, y = freq, group = class, color = class)) +
+  ggplot2::geom_point() +
+  ggplot2::geom_path()
+
+```
+
+
+
