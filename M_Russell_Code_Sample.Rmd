@@ -21,7 +21,7 @@ library(tidyLPA)
 
 # read in data
 
-teds <- readr::read_csv("./tedsd_puf_2019.csv")
+teds <- readr::read_csv("./tedsd_puf_2019.csv.zip")
 
 # filter data so it's only pregnant women
 
